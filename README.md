@@ -1,7 +1,9 @@
 # my-sub2api
 
-把 **Sub2API** 的三个组件（应用 + PostgreSQL + Redis）打成**一个**镜像，用与
-[`my-smart-sub`](https://github.com/s890214/my-smart-sub) 相同的模式自动构建发布。
+把 **Sub2API** 的三个组件（应用 + PostgreSQL + Redis）打成**一个**镜像，构建方式与
+`my-smart-sub` 一致：GitHub Actions 自动构建并推送到 Docker Hub。
+
+上游项目：[Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)
 
 | 组件 | 来源 |
 |---|---|
@@ -9,7 +11,7 @@
 | PostgreSQL | `postgres:18-alpine`（同时作为镜像底座） |
 | Redis | 底座内 `apk add redis`（同一 alpine release，依赖自洽） |
 
-产物：`song88zzz/my-sub2api:latest` 与 `song88zzz/my-sub2api:v<年月日.时分秒>`
+产物：`<DOCKERHUB_USER>/my-sub2api:latest` 与 `<DOCKERHUB_USER>/my-sub2api:v<年月日.时分秒>`
 
 ## 自动化
 
@@ -22,18 +24,18 @@
 
 ## 必需的仓库 secrets
 
-和 `my-smart-sub` 一样，需要在 **Settings → Secrets and variables → Actions** 里配置：
+在 **Settings → Secrets and variables → Actions** 里配置：
 
 | Name | 值 |
 |---|---|
-| `DOCKERHUB_USERNAME` | `song88zzz` |
+| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
 | `DOCKERHUB_TOKEN` | Docker Hub 的 Access Token |
 
-也可以命令行：
+命令行方式（在仓库目录下执行，值由交互输入，不落 shell 历史）：
 
 ```bash
-gh secret set DOCKERHUB_USERNAME -R s890214/my-sub2api   # 交互输入 song88zzz
-gh secret set DOCKERHUB_TOKEN    -R s890214/my-sub2api   # 交互粘贴 token
+gh secret set DOCKERHUB_USERNAME
+gh secret set DOCKERHUB_TOKEN
 ```
 
 ## 运行时需要的环境变量
@@ -43,13 +45,14 @@ gh secret set DOCKERHUB_TOKEN    -R s890214/my-sub2api   # 交互粘贴 token
 | `POSTGRES_PASSWORD` | **必填**，内部 PostgreSQL 的密码 |
 | `POSTGRES_USER` / `POSTGRES_DB` | 默认 `sub2api` / `sub2api` |
 | `REDIS_PASSWORD` | **必填**，内部 Redis 的密码 |
+| `DATABASE_PASSWORD` | 应用连接数据库用，须与 `POSTGRES_PASSWORD` 一致 |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | 首次启动自动创建的管理员（仅首次生效） |
 | `JWT_SECRET` / `TOTP_ENCRYPTION_KEY` | 建议固定，否则重启后登录态 / 已有 2FA 失效 |
 | `SERVER_PORT` | 容器内监听端口，默认 8080 |
 | `PG_MAX_CONNECTIONS` / `PG_SHARED_BUFFERS` / `PG_EFFECTIVE_CACHE_SIZE` / `PG_MAINTENANCE_WORK_MEM` / `PG_WORK_MEM` | PostgreSQL 调参 |
 | `REDIS_MAXMEMORY` | 默认 `128mb` |
 
-数据库与 Redis 只监听 `127.0.0.1`，仅容器内可达；**只需发布应用端口**。
+数据库与 Redis 只监听容器内 `127.0.0.1`，**只需发布应用端口**。
 
 ## 挂载点
 
@@ -67,21 +70,24 @@ docker run -d --name sub2api \
   --memory 512m \
   -p 8891:8080 \
   -e POSTGRES_PASSWORD=... \
+  -e DATABASE_PASSWORD=... \
   -e REDIS_PASSWORD=... \
   -e ADMIN_EMAIL=... -e ADMIN_PASSWORD=... \
   -e JWT_SECRET=... -e TOTP_ENCRYPTION_KEY=... \
   -v /mnt/user/appdata/sub2api:/app/data \
   -v /mnt/user/appdata/sub2api-postgres:/var/lib/postgresql/data \
   -v /mnt/user/appdata/sub2api-redis:/data \
-  song88zzz/my-sub2api:latest
+  <DOCKERHUB_USER>/my-sub2api:latest
 ```
 
-实测空闲内存占用约 `65MB / 512MB`（PG + Redis + 应用合计，未含 PostgreSQL 缓存页逐步增长）。
+实测空闲内存约 `79MB / 512MB`（PostgreSQL + Redis + 应用合计，未含 PostgreSQL 缓存页增长）。
 
-## 说明
+## 设计说明
 
-- 镜像**不是** Sub2API 的 fork，只做打包；上游：<https://github.com/Wei-Shaw/sub2api>
+- 镜像**不是** Sub2API 的 fork，只做打包。
 - 底座之所以选 `postgres:18-alpine` 而不是应用镜像：三个上游镜像的 alpine 版本互不相同
-  （3.24 / 3.23 / 3.21），跨镜像拷 PostgreSQL 二进制会撞 ICU 78 / libxml2 版本错配；
-  以 postgres 为底座、Redis 走 apk，依赖全部由包管理器保证自洽。
-- 应用按相对路径 `data/...` 读写数据，因此镜像里固定了 `WORKDIR /app`。
+  （3.24 / 3.23 / 3.21），跨镜像拷 PostgreSQL 二进制会撞 `libicuuc.so.78` 等库的版本错配；
+  以 postgres 为底座、Redis 走 `apk`，依赖全部由包管理器保证自洽。
+- 应用按相对路径 `data/...` 读写数据，因此镜像里固定了 `WORKDIR /app`——缺了它会写到
+  `/` 下并报 `permission denied`。
+- 入口脚本按 PostgreSQL → Redis → 应用 的顺序拉起，任一依赖退出则整体退出。
