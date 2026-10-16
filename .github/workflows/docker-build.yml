@@ -1,0 +1,96 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  schedule:
+    # 每天检查一次上游基础镜像是否有更新
+    - cron: '0 3 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  # 本镜像由这三个上游镜像组成，任一 digest 变化就重建
+  BASE_IMAGES: "weishaw/sub2api:latest postgres:18-alpine redis:8-alpine"
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check base image updates
+        id: check-base
+        run: |
+          NEW=""
+          for img in $BASE_IMAGES; do
+            docker pull -q "$img" >/dev/null
+            d=$(docker inspect --format='{{index .RepoDigests 0}}' "$img")
+            echo "  $img -> $d"
+            NEW="$NEW$d"$'\n'
+          done
+          NEW=$(printf '%s' "$NEW" | sort)
+
+          if [ -f .last-base-digest ] && [ "$NEW" = "$(cat .last-base-digest)" ]; then
+            echo "Base images not changed, skipping build"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Base images updated, need to rebuild"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+          printf '%s' "$NEW" > .last-base-digest
+
+      - name: Generate version tag
+        id: version
+        run: |
+          # 生成版本号：年月日.时分秒
+          VERSION=$(date -u +'%Y%m%d.%H%M%S')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION"
+          echo "$VERSION" > VERSION
+
+      - name: Update VERSION file in repo
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add VERSION
+          git diff --staged --quiet || git commit -m "chore: update version to $VERSION"
+          git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
+
+      - name: Build and push Docker image
+        if: steps.check-base.outputs.needs_build == 'true' || github.event_name != 'schedule'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/my-sub2api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/my-sub2api:v${{ steps.version.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save base image digests
+        if: steps.check-base.outputs.needs_build == 'true' || github.event_name != 'schedule'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .last-base-digest
+          git diff --staged --quiet || git commit -m "chore: update base image digests"
+          git push https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
