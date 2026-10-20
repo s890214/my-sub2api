@@ -6,8 +6,8 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.27.2-alpine
 ARG SUB2API_REPO=https://github.com/Wei-Shaw/sub2api
-# 固定上游提交：每次构建只叠加本仓库 patches/ 下的改动，不跟上游漂移
-ARG SUB2API_REF=b0a02a3304a0a78cdd003ddda1dd23ba02c03084
+# 上游版本由 workflow 按「最新正式 release」传入；此默认值仅用于手动构建
+ARG SUB2API_REF=v0.2.17
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
