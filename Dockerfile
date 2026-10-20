@@ -3,10 +3,44 @@
 # =============================================================================
 
 ARG POSTGRES_IMAGE=postgres:18-alpine
-ARG APP_IMAGE=weishaw/sub2api:latest
+ARG NODE_IMAGE=node:24-alpine
+ARG GOLANG_IMAGE=golang:1.27.2-alpine
+ARG SUB2API_REPO=https://github.com/Wei-Shaw/sub2api
+# 固定上游提交：每次构建只叠加本仓库 patches/ 下的改动，不跟上游漂移
+ARG SUB2API_REF=b0a02a3304a0a78cdd003ddda1dd23ba02c03084
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
 
-# --- 组件 1：应用本体（官方镜像，CGO_ENABLED=0 静态二进制，直接拷贝） --------
-FROM ${APP_IMAGE} AS appsrc
+# --- 0. 拉取上游源码并打补丁 -------------------------------------------------
+FROM ${GOLANG_IMAGE} AS src
+ARG SUB2API_REPO
+ARG SUB2API_REF
+RUN apk add --no-cache git
+WORKDIR /src
+RUN git clone ${SUB2API_REPO} . && git checkout ${SUB2API_REF}
+COPY patches/ /patches/
+RUN git apply /patches/memory-metric.patch
+
+# --- 1. 前端构建 -------------------------------------------------------------
+FROM ${NODE_IMAGE} AS frontend-builder
+COPY --from=src /src /src
+WORKDIR /src/frontend
+RUN corepack enable && corepack prepare pnpm@9 --activate \
+ && pnpm install --frozen-lockfile --prefer-offline \
+ && pnpm run build
+
+# --- 2. 后端构建（嵌入前端 dist） --------------------------------------------
+FROM src AS backend-builder
+ARG GOPROXY
+ARG GOSUMDB
+ARG VERSION=unknown
+ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB}
+COPY --from=frontend-builder /src/backend/internal/web/dist /src/backend/internal/web/dist
+WORKDIR /src/backend
+RUN go mod download \
+ && CGO_ENABLED=0 go build -tags embed -trimpath \
+      -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=custom -X main.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.BuildType=release" \
+      -o /out/sub2api ./cmd/server
 
 # --- 组件 2/3 的底座：postgres 官方镜像 -------------------------------------
 # 选它是因为它本身就是完整的 alpine，且已含 PostgreSQL 服务端与全部运行时依赖；
@@ -24,9 +58,9 @@ RUN set -eux; \
     chown -R sub2api:sub2api /app; \
     chown -R postgres:postgres /var/lib/postgresql /run/postgresql
 
-COPY --from=appsrc --chown=sub2api:sub2api /app/sub2api   /app/sub2api
-COPY --from=appsrc --chown=sub2api:sub2api /app/resources /app/resources
-COPY --from=appsrc                          /app/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --from=backend-builder --chown=sub2api:sub2api /out/sub2api /app/sub2api
+COPY --from=backend-builder --chown=sub2api:sub2api /src/backend/resources /app/resources
+COPY --from=backend-builder /src/deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 COPY entrypoint.sh /usr/local/bin/allinone-entrypoint.sh

@@ -10,7 +10,7 @@ on:
 
 env:
   # 本镜像由这三个上游镜像组成，任一 digest 变化就重建
-  BASE_IMAGES: "weishaw/sub2api:latest postgres:18-alpine redis:8-alpine"
+  BASE_IMAGES: "postgres:18-alpine"
 
 jobs:
   check-and-build:

@@ -1,0 +1,79 @@
+diff --git a/backend/internal/service/ops_metrics_collector.go b/backend/internal/service/ops_metrics_collector.go
+index 4fc9576..75d8701 100644
+--- a/backend/internal/service/ops_metrics_collector.go
++++ b/backend/internal/service/ops_metrics_collector.go
+@@ -723,7 +723,10 @@ func (c *OpsMetricsCollector) tryCgroupCPUPercent(now time.Time) *float64 {
+ func readCgroupMemoryBytes() (usedBytes uint64, totalBytes uint64, ok bool) {
+ 	// cgroup v2 (most common in modern containers)
+ 	if used, ok1 := readUintFile("/sys/fs/cgroup/memory.current"); ok1 {
+-		usedBytes = used
++		// memory.current 含可回收的页缓存（镜像/数据文件读入后长期挂着），
++		// 直接上报会把几百 MB 缓存误当成进程占用。与 docker stats 口径一致，
++		// 扣掉 inactive_file 后再上报。
++		usedBytes = subtractInactiveFile(used, "/sys/fs/cgroup/memory.stat")
+ 		rawMax, err := os.ReadFile("/sys/fs/cgroup/memory.max")
+ 		if err == nil {
+ 			s := strings.TrimSpace(string(rawMax))
+@@ -751,6 +754,28 @@ func readCgroupMemoryBytes() (usedBytes uint64, totalBytes uint64, ok bool) {
+ 	return 0, 0, false
+ }
+ 
++// subtractInactiveFile removes reclaimable inactive page cache from a cgroup v2
++// memory.current reading so the reported usage matches `docker stats` and
++// reflects memory pressure instead of file cache warmed by image/data reads.
++func subtractInactiveFile(used uint64, statPath string) uint64 {
++	raw, err := os.ReadFile(statPath)
++	if err != nil {
++		return used
++	}
++	for _, line := range strings.Split(string(raw), "\n") {
++		fields := strings.Fields(line)
++		if len(fields) != 2 || fields[0] != "inactive_file" {
++			continue
++		}
++		inactive, err := strconv.ParseUint(fields[1], 10, 64)
++		if err != nil || inactive >= used {
++			return used
++		}
++		return used - inactive
++	}
++	return used
++}
++
+ func readCgroupCPUUsageNanos() (usageNanos uint64, ok bool) {
+ 	// cgroup v2: cpu.stat has usage_usec
+ 	if raw, err := os.ReadFile("/sys/fs/cgroup/cpu.stat"); err == nil {
+diff --git a/backend/internal/service/ops_metrics_collector_memory_test.go b/backend/internal/service/ops_metrics_collector_memory_test.go
+index 0a1e887..c43fcb4 100644
+--- a/backend/internal/service/ops_metrics_collector_memory_test.go
++++ b/backend/internal/service/ops_metrics_collector_memory_test.go
+@@ -1,6 +1,8 @@
+ package service
+ 
+ import (
++	"os"
++	"path/filepath"
+ 	"testing"
+ 
+ 	"github.com/shirou/gopsutil/v4/mem"
+@@ -108,3 +110,20 @@ func TestResolveMemoryStatsHostWithoutTotalKeepsGopsutilPercent(t *testing.T) {
+ 	require.Equal(t, int64(8*1024), *usedMB)
+ 	require.InDelta(t, 42.5, *pct, 0.05)
+ }
++
++// TestSubtractInactiveFile covers the docker-stats parity fix: cgroup v2
++// memory.current includes reclaimable inactive page cache, which must not be
++// reported as process usage.
++func TestSubtractInactiveFile(t *testing.T) {
++	dir := t.TempDir()
++	statPath := filepath.Join(dir, "memory.stat")
++
++	require.NoError(t, os.WriteFile(statPath,
++		[]byte("anon 100\ninactive_file 4096\nactive_file 8\n"), 0o600))
++	require.Equal(t, uint64(4096), subtractInactiveFile(8192, statPath))
++
++	// Missing file / malformed stat: fall back to the raw reading.
++	require.Equal(t, uint64(8192), subtractInactiveFile(8192, filepath.Join(dir, "missing")))
++	require.NoError(t, os.WriteFile(statPath, []byte("inactive_file 999999\n"), 0o600))
++	require.Equal(t, uint64(8192), subtractInactiveFile(8192, statPath))
++}
