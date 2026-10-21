@@ -1,5 +1,9 @@
 # =============================================================================
 # Sub2API 一体化镜像：把「应用 + PostgreSQL + Redis」三个组件装进同一个容器
+#
+# 上游：Wei-Shaw/sub2api (LGPL-3.0)
+# 修改：应用 patches/memory-metric.patch（cgroup v2 内存口径）
+# 源码：https://github.com/s890214/my-sub2api
 # =============================================================================
 
 ARG POSTGRES_IMAGE=postgres:18-alpine
@@ -47,6 +51,11 @@ RUN go mod download \
 # Redis 用 apk 装（同一 alpine release，依赖由包管理器自洽解决，避免跨镜像拷
 # 二进制的 ICU/OpenSSL 版本错配）。
 FROM ${POSTGRES_IMAGE}
+
+LABEL org.opencontainers.image.source="https://github.com/s890214/my-sub2api" \
+      org.opencontainers.image.licenses="LGPL-3.0" \
+      org.opencontainers.image.base.name="postgres:18-alpine" \
+      org.opencontainers.image.description="Sub2API all-in-one image (app + PostgreSQL + Redis), built from Wei-Shaw/sub2api with local patches"
 
 ARG VERSION=unknown
 

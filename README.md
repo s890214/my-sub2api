@@ -6,9 +6,19 @@ Sub2API 的一体化镜像：应用 + PostgreSQL + Redis 打包在同一个容�
 
 | 组件 | 来源 |
 |---|---|
-| 应用 | `weishaw/sub2api:latest` |
+| 应用 | 从 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 源码构建（tag 记录在 `upstream.ref`） |
 | PostgreSQL | `postgres:18-alpine`（同时作为镜像底座） |
 | Redis | `apk add redis`（与底座同一 alpine release） |
+
+## 上游与修改
+
+- 上游：[Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)，许可证 **LGPL-3.0**。
+- 本仓库在构建时拉取上游源码，并应用 `patches/memory-metric.patch`：cgroup v2 内存统计扣除 `inactive_file`，与 `docker stats` 口径一致。这是对上游作品的修改，修改记录见本仓库 git 历史。
+- 镜像与源码同源：任何人都可以用本仓库的 `Dockerfile` 加 `upstream.ref` 指定的上游 tag 重建镜像。
+
+## 许可证
+
+本仓库及构建产物按 **LGPL-3.0** 分发，许可证全文见 [LICENSE](LICENSE)；上游版权归 Wei-Shaw/sub2api 作者所有。
 
 ## 环境变量
 
